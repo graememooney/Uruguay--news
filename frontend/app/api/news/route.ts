@@ -5,8 +5,8 @@ export const runtime = 'edge';
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    // HARDCODED: Directly pointing to your Render Backend
-    const backendUrl = "https://mercosur-backend.onrender.com"; 
+    // UPDATED: Now pointing to Backend 2.0
+    const backendUrl = "https://mercosur-backend-2-0.onrender.com"; 
     
     const endpoint = `${backendUrl}/news?${searchParams.toString()}`;
     
@@ -30,8 +30,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ 
       ok: false, 
       error: error.message,
-      // This will verify we are using the new address if it fails again
-      debug_backend_used: "https://mercosur-backend.onrender.com" 
+      debug_backend_used: "https://mercosur-backend-2-0.onrender.com" 
     }, { status: 500 });
   }
 }

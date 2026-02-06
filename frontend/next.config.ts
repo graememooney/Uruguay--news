@@ -4,8 +4,8 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        // We are forcing it to use your Live Render Backend
-        destination: 'https://mercosur-backend.onrender.com/:path*',
+        // UPDATED: Pointing to Backend 2.0
+        destination: 'https://mercosur-backend-2-0.onrender.com/:path*',
       },
     ]
   },
