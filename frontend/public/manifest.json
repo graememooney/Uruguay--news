@@ -1,0 +1,18 @@
+{
+  "name": "Uruguay News Aggregator",
+  "short_name": "UY News",
+  "description": "Local news from Uruguay and Argentina, translated to English.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05070f",
+  "theme_color": "#0b1020",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/globe.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

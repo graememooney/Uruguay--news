@@ -1,0 +1,1808 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+backend/
+  .env
+  cache.db
+  main.py
+  requirements.txt
+frontend/
+  app/
+    api/
+      news/
+        route.ts
+    favicon.ico
+    globals.css
+    layout.tsx
+    page.tsx
+  public/
+    file.svg
+    globe.svg
+    next.svg
+    vercel.svg
+    window.svg
+  .gitignore
+  eslint.config.mjs
+  frontend@0.1.0
+  next
+  next.config.ts
+  package.json
+  postcss.config.mjs
+  README.md
+  tsconfig.json
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/main.py">
+from __future__ import annotations
+
+import os
+import re
+import json
+import time
+import html
+import sqlite3
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import feedparser
+import httpx
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+
+# -----------------------------
+# App
+# -----------------------------
+
+app = FastAPI(title="News Aggregator")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # MVP
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------
+# Feeds
+# -----------------------------
+
+@dataclass(frozen=True)
+class Feed:
+    name: str
+    url: str
+
+FEEDS_BY_COUNTRY: Dict[str, List[Feed]] = {
+    "uruguay": [
+        Feed("Montevideo Portal - Portada", "https://www.montevideo.com.uy/anxml.aspx?58"),
+        Feed("Montevideo Portal - Noticias", "https://www.montevideo.com.uy/anxml.aspx?59"),
+        Feed("Montevideo Portal - Tiempo Libre", "https://www.montevideo.com.uy/anxml.aspx?60"),
+        Feed("Montevideo Portal - Tecnología", "https://www.montevideo.com.uy/anxml.aspx?133"),
+        Feed("la diaria - Artículos", "https://ladiaria.com.uy/feeds/articulos"),
+        Feed("El Observador - Home", "https://www.elobservador.com.uy/rss/pages/home.xml"),
+        Feed("El Observador - Último momento", "https://www.elobservador.com.uy/rss/pages/ultimo-momento.xml"),
+        Feed("Subrayado - Portada", "https://www.subrayado.com.uy/rss/pages/home.xml"),
+        Feed("Caras y Caretas - Portada", "https://www.carasycaretas.com.uy/rss/pages/home.xml"),
+        Feed("Teledoce - Portada", "https://www.teledoce.com/feed/"),
+    ],
+    "argentina": [
+        Feed("Clarín - Últimas", "https://www.clarin.com/rss/lo-ultimo/"),
+        Feed("Ámbito - Home", "https://www.ambito.com/rss/pages/home.xml"),
+        Feed("El Cronista - Últimas", "https://www.cronista.com/files/rss/news.xml"),
+        Feed("Página 12 - Últimas", "https://www.pagina12.com.ar/rss/portada"),
+        Feed("Perfil - Últimas", "https://www.perfil.com/rss/ultimas-noticias"),
+    ],
+}
+
+# -----------------------------
+# SQLite cache (translations)
+# -----------------------------
+
+DB_PATH = os.path.join(os.path.dirname(__file__), "cache.db")
+TRANSLATION_TABLE = "translation_cache"
+
+EXPECTED_COLUMNS = [
+    ("url", "TEXT PRIMARY KEY"),
+    ("title_src", "TEXT"),
+    ("summary_src", "TEXT"),
+    ("title_en", "TEXT"),
+    ("summary_en", "TEXT"),
+    ("translated_via", "TEXT"),
+    ("translation_note", "TEXT"),
+    ("payload", "TEXT"),
+    ("updated_at", "INTEGER"),
+]
+
+def db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def ensure_db() -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {TRANSLATION_TABLE} (
+            url TEXT PRIMARY KEY,
+            title_src TEXT,
+            summary_src TEXT,
+            title_en TEXT,
+            summary_en TEXT,
+            translated_via TEXT,
+            translation_note TEXT,
+            payload TEXT,
+            updated_at INTEGER
+        );
+        """
+    )
+    conn.commit()
+
+    cur.execute(f"PRAGMA table_info({TRANSLATION_TABLE});")
+    existing = {row["name"] for row in cur.fetchall()}
+
+    for col_name, col_type in EXPECTED_COLUMNS:
+        if col_name not in existing:
+            cur.execute(f"ALTER TABLE {TRANSLATION_TABLE} ADD COLUMN {col_name} {col_type};")
+    conn.commit()
+    conn.close()
+
+ensure_db()
+
+# -----------------------------
+# Config
+# -----------------------------
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0 Safari/537.36"
+)
+
+# RSS fetch timeout (keep low to avoid 504s)
+FEED_TIMEOUT_SECS = float(os.getenv("FEED_TIMEOUT_SECS", "6.5"))
+
+# How many new OpenAI translations we allow per request (prevents huge slow first-run)
+MAX_OPENAI_TRANSLATIONS_PER_REQUEST = int(os.getenv("MAX_OPENAI_TRANSLATIONS_PER_REQUEST", "8"))
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+def parse_range_to_cutoff(range_str: str) -> Optional[datetime]:
+    r = (range_str or "").lower().strip()
+    if r in ("all", ""):
+        return None
+    if r in ("3d", "3"):
+        return now_utc() - timedelta(days=3)
+    if r in ("7d", "7"):
+        return now_utc() - timedelta(days=7)
+    if r in ("14d", "14"):
+        return now_utc() - timedelta(days=14)
+    if r in ("30d", "30"):
+        return now_utc() - timedelta(days=30)
+    return now_utc() - timedelta(days=7)
+
+def html_to_text(s: str) -> str:
+    if not s:
+        return ""
+    s = html.unescape(s)
+    s = s.replace("\u00a0", " ")
+    s = _TAG_RE.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def published_dt(entry: Any) -> Optional[datetime]:
+    for key in ("published_parsed", "updated_parsed"):
+        st = entry.get(key)
+        if st:
+            try:
+                return datetime.fromtimestamp(time.mktime(st), tz=timezone.utc)
+            except Exception:
+                continue
+    return None
+
+def pick_entry_url(entry: Any) -> str:
+    for key in ("link", "id", "guid"):
+        v = entry.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+def cache_rows_count() -> int:
+    try:
+        ensure_db()
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) AS c FROM {TRANSLATION_TABLE}")
+        n = int(cur.fetchone()["c"])
+        conn.close()
+        return n
+    except Exception:
+        return 0
+
+# -----------------------------
+# OpenAI translation
+# -----------------------------
+
+def translate_via_openai(title: str, summary: str) -> Tuple[Optional[str], Optional[str], str]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None, None, "missing_api_key"
+
+    system = (
+        "You translate Spanish news headlines and short summaries into natural English. "
+        "Do not add facts. Do not add commentary. Return valid JSON only."
+    )
+    user = {"title": title or "", "summary": summary or ""}
+
+    # SDK first, fallback to HTTP
+    try:
+        from openai import OpenAI  # type: ignore
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+        )
+        txt = resp.choices[0].message.content or ""
+        data = json.loads(txt)
+        return data.get("title_en"), data.get("summary_en"), "openai"
+    except Exception:
+        try:
+            payload = {
+                "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+            }
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            with httpx.Client(timeout=20.0) as client:
+                r = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+                if r.status_code >= 400:
+                    return None, None, f"openai_http_{r.status_code}"
+                out = r.json()
+                txt = out["choices"][0]["message"]["content"]
+                data = json.loads(txt)
+                return data.get("title_en"), data.get("summary_en"), "openai"
+        except Exception as e2:
+            return None, None, f"openai_error:{type(e2).__name__}"
+
+def translate_cached(url: str, title: str, summary: str, force: bool) -> Tuple[Optional[str], Optional[str], str, str, bool]:
+    """
+    Returns (title_en, summary_en, translated_via, translation_note, did_openai_call)
+    """
+    ensure_db()
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(f"SELECT * FROM {TRANSLATION_TABLE} WHERE url = ?", (url,))
+    row = cur.fetchone()
+
+    if row and not force:
+        t_en = row["title_en"]
+        s_en = row["summary_en"]
+        note = row["translation_note"] or "cache"
+        if t_en or s_en:
+            conn.close()
+            return t_en, s_en, "cache", note, False
+
+    t_en, s_en, note = translate_via_openai(title, summary)
+    via = "openai" if note == "openai" else "error"
+
+    payload = {
+        "title_src": title,
+        "summary_src": summary,
+        "title_en": t_en,
+        "summary_en": s_en,
+        "translated_via": via,
+        "translation_note": note,
+    }
+
+    cur.execute(
+        f"""
+        INSERT INTO {TRANSLATION_TABLE}
+        (url, title_src, summary_src, title_en, summary_en, translated_via, translation_note, payload, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+            title_src=excluded.title_src,
+            summary_src=excluded.summary_src,
+            title_en=excluded.title_en,
+            summary_en=excluded.summary_en,
+            translated_via=excluded.translated_via,
+            translation_note=excluded.translation_note,
+            payload=excluded.payload,
+            updated_at=excluded.updated_at
+        """,
+        (
+            url,
+            title,
+            summary,
+            t_en,
+            s_en,
+            via,
+            note,
+            json.dumps(payload, ensure_ascii=False),
+            int(time.time()),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    return t_en, s_en, via, note, (via == "openai")
+
+# -----------------------------
+# RSS Fetch + Aggregate (ASYNC)
+# -----------------------------
+
+async def fetch_feed_async(client: httpx.AsyncClient, feed: Feed) -> Tuple[str, int, bool, int, List[Dict[str, Any]], Optional[str]]:
+    """
+    Returns: (status, http_code, bozo, entries_count, items, error_code)
+    """
+    try:
+        r = await client.get(feed.url, follow_redirects=True)
+        http_code = r.status_code
+        if http_code >= 400:
+            return "FAIL", http_code, False, 0, [], f"http_status_{http_code}"
+
+        parsed = feedparser.parse(r.content)
+        bozo = bool(getattr(parsed, "bozo", False))
+        entries = getattr(parsed, "entries", []) or []
+        if not entries:
+            return "FAIL", http_code, bozo, 0, [], "no_entries"
+
+        items: List[Dict[str, Any]] = []
+        for e in entries:
+            url = pick_entry_url(e)
+            title = html_to_text(e.get("title", "") or "")
+            summary = html_to_text(e.get("summary", "") or e.get("description", "") or "")
+            dt = published_dt(e)
+            published_at = dt.isoformat() if dt else None
+
+            if url and (title or summary):
+                items.append(
+                    {
+                        "source": feed.name,
+                        "feed_url": feed.url,
+                        "title": title,
+                        "summary": summary,
+                        "url": url,
+                        "published_at": published_at,
+                        "_published_dt": dt,
+                    }
+                )
+
+        if not items:
+            return "FAIL", http_code, bozo, 0, [], "no_entries"
+
+        return "OK", http_code, bozo, len(entries), items, None
+    except (httpx.TimeoutException, httpx.ConnectError):
+        return "FAIL", 0, False, 0, [], "timeout"
+    except Exception:
+        return "FAIL", 0, False, 0, [], "fetch_error"
+
+async def aggregate_news(country: str, per_feed: int, range_str: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    country = (country or "uruguay").lower().strip()
+    feeds = FEEDS_BY_COUNTRY.get(country, FEEDS_BY_COUNTRY["uruguay"])
+    cutoff = parse_range_to_cutoff(range_str)
+
+    feed_errors: List[Dict[str, str]] = []
+    all_items: List[Dict[str, Any]] = []
+
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=10)
+    timeout = httpx.Timeout(FEED_TIMEOUT_SECS)
+    headers = {"User-Agent": UA, "Accept": "*/*"}
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, limits=limits) as client:
+        tasks = [fetch_feed_async(client, f) for f in feeds]
+        results = await asyncio.gather(*tasks)
+
+    for feed, res in zip(feeds, results):
+        status, http_code, bozo, entries_count, items, err = res
+
+        if status != "OK":
+            feed_errors.append({"source": feed.name, "error": err or "unknown"})
+            continue
+
+        if cutoff:
+            kept = []
+            for it in items:
+                dt = it.get("_published_dt")
+                if dt and dt >= cutoff:
+                    kept.append(it)
+            items = kept
+
+        items = items[: max(0, per_feed)]
+        for it in items:
+            it.pop("_published_dt", None)
+
+        if items:
+            all_items.extend(items)
+        else:
+            feed_errors.append({"source": feed.name, "error": "no_entries"})
+
+    # Dedup by URL
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for it in all_items:
+        u = it.get("url") or ""
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        deduped.append(it)
+
+    # Sort newest first
+    def sort_key(x: Dict[str, Any]) -> Tuple[int, str]:
+        p = x.get("published_at") or ""
+        return (1 if p else 0, p)
+
+    deduped.sort(key=sort_key, reverse=True)
+    return deduped, feed_errors
+
+# -----------------------------
+# Routes
+# -----------------------------
+
+@app.get("/")
+def root():
+    return {"ok": True}
+
+@app.get("/news")
+async def news(
+    country: str = Query("uruguay"),
+    per_feed: int = Query(10, ge=1, le=50),
+    range: str = Query("3d"),
+    translate: str = Query("0"),
+    force_refresh: int = Query(0),
+):
+    items, feed_errors = await aggregate_news(country=country, per_feed=per_feed, range_str=range)
+
+    do_translate = (translate or "").lower().strip() == "en"
+    stats = {"cache": 0, "openai": 0, "error": 0, "skipped": 0}
+
+    if do_translate:
+        openai_budget = MAX_OPENAI_TRANSLATIONS_PER_REQUEST
+
+        for it in items:
+            url = it.get("url") or ""
+            title = it.get("title") or ""
+            summary = it.get("summary") or ""
+
+            # If budget is exhausted and item not cached, skip translating this item (prevents timeouts)
+            if openai_budget <= 0 and not force_refresh:
+                it["title_en"] = None
+                it["summary_en"] = None
+                it["translated_via"] = "skipped"
+                it["translation_note"] = "skipped_budget"
+                stats["skipped"] += 1
+                continue
+
+            t_en, s_en, via, note, did_openai = translate_cached(url, title, summary, force=bool(force_refresh))
+            it["title_en"] = t_en
+            it["summary_en"] = s_en
+            it["translated_via"] = via
+            it["translation_note"] = note
+
+            if via == "cache":
+                stats["cache"] += 1
+            elif via == "openai":
+                stats["openai"] += 1
+            else:
+                stats["error"] += 1
+
+            if did_openai:
+                openai_budget -= 1
+    else:
+        for it in items:
+            it["title_en"] = None
+            it["summary_en"] = None
+            it["translated_via"] = None
+            it["translation_note"] = None
+
+    return {
+        "ok": True,
+        "country": (country or "uruguay").lower().strip(),
+        "count": len(items),
+        "params": {
+            "per_feed": per_feed,
+            "range": range,
+            "translate": translate,
+            "force_refresh": force_refresh,
+        },
+        "translation_stats": stats if do_translate else None,
+        "items": items,
+        "feed_errors": feed_errors,
+    }
+
+@app.get("/feeds-status", response_class=HTMLResponse)
+async def feeds_status(
+    country: str = Query("uruguay"),
+    range: str = Query("7d"),
+    per_feed: int = Query(5, ge=1, le=50),
+):
+    c = (country or "uruguay").lower().strip()
+    feeds = FEEDS_BY_COUNTRY.get(c, FEEDS_BY_COUNTRY["uruguay"])
+
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=10)
+    timeout = httpx.Timeout(FEED_TIMEOUT_SECS)
+    headers = {"User-Agent": UA, "Accept": "*/*"}
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, limits=limits) as client:
+        tasks = [fetch_feed_async(client, f) for f in feeds]
+        results = await asyncio.gather(*tasks)
+
+    rows = []
+    for f, res in zip(feeds, results):
+        status, http_code, bozo, entries_count, _items, err = res
+        rows.append(
+            {
+                "feed": f.name,
+                "url": f.url,
+                "status": status,
+                "http": http_code,
+                "bozo": bozo,
+                "entries": entries_count if status == "OK" else 0,
+                "kept": min(per_feed, entries_count) if status == "OK" else 0,
+                "error": err or "",
+            }
+        )
+
+    def pill(status: str) -> str:
+        if status == "OK":
+            return '<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:#e8fff0;border:1px solid #95e4ad;color:#0a7a2a;font-weight:700;">OK</span>'
+        return '<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:#ffecec;border:1px solid #ff9d9d;color:#b00020;font-weight:700;">FAIL</span>'
+
+    def esc(x: Any) -> str:
+        return html.escape(str(x) if x is not None else "")
+
+    country_tabs = f"""
+    <div style="margin:12px 0 18px 0;">
+      <a href="/feeds-status?country=uruguay&range={esc(range)}&per_feed={per_feed}"
+         style="display:inline-block;padding:8px 14px;border-radius:10px;border:1px solid #ddd;margin-right:8px;text-decoration:none;background:{'#111' if c=='uruguay' else '#fff'};color:{'#fff' if c=='uruguay' else '#111'};font-weight:700;">
+        Uruguay
+      </a>
+      <a href="/feeds-status?country=argentina&range={esc(range)}&per_feed={per_feed}"
+         style="display:inline-block;padding:8px 14px;border-radius:10px;border:1px solid #ddd;text-decoration:none;background:{'#111' if c=='argentina' else '#fff'};color:{'#fff' if c=='argentina' else '#111'};font-weight:700;">
+        Argentina
+      </a>
+    </div>
+    """
+
+    run_news_no = f"/news?country={esc(c)}&range={esc(range)}&per_feed={per_feed}&translate=0"
+    run_news_yes = f"/news?country={esc(c)}&range={esc(range)}&per_feed={per_feed}&translate=en"
+    view_json = f"/feeds-status.json?country={esc(c)}&range={esc(range)}&per_feed={per_feed}"
+
+    html_out = f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Feeds Status</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 28px;">
+  <h1 style="margin:0 0 10px 0;font-size:44px;">Feeds Status</h1>
+
+  <div style="color:#444;margin-bottom:14px;">
+    Country: <b>{esc(c)}</b> |
+    Cache rows: <b>{cache_rows_count()}</b> |
+    Range: <b>{esc(range)}</b> |
+    per_feed: <b>{per_feed}</b> |
+    Feed timeout: <b>{FEED_TIMEOUT_SECS}s</b>
+  </div>
+
+  {country_tabs}
+
+  <div style="margin: 10px 0 18px 0;">
+    <a href="/docs" style="font-weight:700;margin-right:14px;">Open API docs</a>
+    <a href="{run_news_no}" style="font-weight:700;margin-right:14px;">Run /news (no translation)</a>
+    <a href="{run_news_yes}" style="font-weight:700;margin-right:14px;">Run /news (translate)</a>
+    <a href="{view_json}" style="font-weight:700;">View JSON</a>
+  </div>
+
+  <table style="width:100%; border-collapse: collapse; border: 1px solid #eee; border-radius:14px; overflow:hidden;">
+    <thead>
+      <tr style="background:#f7f7f7;">
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">Feed</th>
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">Status</th>
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">HTTP</th>
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">Bozo</th>
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">Entries</th>
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">Kept</th>
+        <th style="text-align:left;padding:14px;border-bottom:1px solid #eee;">Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(
+        f"<tr>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;'><div style='font-weight:800;'>{esc(r['feed'])}</div><div style='margin-top:4px;'><a href='{esc(r['url'])}' target='_blank' rel='noreferrer'>{esc(r['url'])}</a></div></td>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;'>{pill(r['status'])}</td>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;'>{esc(r['http'])}</td>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;'>{esc(r['bozo'])}</td>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;'>{esc(r['entries'])}</td>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;'>{esc(r['kept'])}</td>"
+        f"<td style='padding:14px;border-bottom:1px solid #f0f0f0;color:#b00020;'>{esc(r['error'])}</td>"
+        f"</tr>"
+        for r in rows
+      )}
+    </tbody>
+  </table>
+
+  <p style="color:#666;margin-top:14px;">
+    Notes: “Bozo” means the XML wasn’t perfectly well-formed, but it can still have entries. “Kept” is how many we keep after per_feed + range filtering.
+  </p>
+</body>
+</html>
+"""
+    return HTMLResponse(html_out)
+
+@app.get("/feeds-status.json")
+async def feeds_status_json(
+    country: str = Query("uruguay"),
+    range: str = Query("7d"),
+    per_feed: int = Query(5, ge=1, le=50),
+):
+    c = (country or "uruguay").lower().strip()
+    feeds = FEEDS_BY_COUNTRY.get(c, FEEDS_BY_COUNTRY["uruguay"])
+
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=10)
+    timeout = httpx.Timeout(FEED_TIMEOUT_SECS)
+    headers = {"User-Agent": UA, "Accept": "*/*"}
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, limits=limits) as client:
+        tasks = [fetch_feed_async(client, f) for f in feeds]
+        results = await asyncio.gather(*tasks)
+
+    out = []
+    for f, res in zip(feeds, results):
+        status, http_code, bozo, entries_count, _items, err = res
+        out.append(
+            {
+                "feed": f.name,
+                "url": f.url,
+                "status": status,
+                "http": http_code,
+                "bozo": bozo,
+                "entries": entries_count if status == "OK" else 0,
+                "kept": min(per_feed, entries_count) if status == "OK" else 0,
+                "error": err or "",
+            }
+        )
+
+    return {
+        "country": c,
+        "range": range,
+        "per_feed": per_feed,
+        "cache_rows": cache_rows_count(),
+        "feeds": out,
+    }
+</file>
+
+<file path="backend/requirements.txt">
+fastapi==0.115.0
+uvicorn==0.30.6
+feedparser==6.0.11
+python-dotenv==1.0.1
+openai==1.40.6
+httpx==0.27.2
+</file>
+
+<file path="frontend/app/api/news/route.ts">
+import { NextResponse } from "next/server";
+
+function getBackendBaseUrl() {
+  // Preferred: explicit env var
+  const envUrl =
+    process.env.BACKEND_URL ||
+    process.env.NEXT_PUBLIC_BACKEND_URL;
+
+  if (envUrl) return envUrl.replace(/\/+$/, "");
+
+  // Codespaces public URL fallback (best for browser-accessible services)
+  const codespace = process.env.CODESPACE_NAME;
+  if (codespace) return `https://${codespace}-8003.app.github.dev`;
+
+  // Local fallback
+  return "http://127.0.0.1:8003";
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const params = url.searchParams.toString();
+
+  const backend = getBackendBaseUrl();
+  const target = `${backend}/news${params ? `?${params}` : ""}`;
+
+  // Longer timeout so RSS doesn’t 504 instantly
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+
+  try {
+    const res = await fetch(target, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "Accept": "application/json",
+      },
+    });
+
+    const text = await res.text();
+
+    // Pass-through response (status + body)
+    return new NextResponse(text, {
+      status: res.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err: any) {
+    const message =
+      err?.name === "AbortError"
+        ? "Backend request timed out (proxy)"
+        : (err?.message || "Proxy error");
+
+    return NextResponse.json(
+      { ok: false, error: message, backend: target },
+      { status: 504 }
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+</file>
+
+<file path="frontend/app/globals.css">
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+</file>
+
+<file path="frontend/app/layout.tsx">
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Create Next App",
+  description: "Generated by create next app",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        {children}
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="frontend/app/page.tsx">
+"use client";
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+type Country = "uruguay" | "argentina";
+type RangeKey = "3d" | "7d" | "all";
+type TranslateMode = "en" | "none";
+type ViewMode = "cards" | "compact";
+
+type NewsItem = {
+  source: string;
+  feed_url?: string;
+  title: string;
+  summary: string;
+  url: string;
+  published_at?: string;
+
+  title_en?: string | null;
+  summary_en?: string | null;
+
+  translated_via?: string | null; // "cache" | "openai" | "error" | null
+  translation_note?: string | null;
+};
+
+type NewsResponse = {
+  ok: boolean;
+  country: string;
+  count: number;
+  params: {
+    per_feed: number;
+    range: string;
+    translate: string;
+    force_refresh: number;
+    country?: string;
+    source?: string;
+    q?: string;
+  };
+  translation_stats?: { cache: number; openai: number; error: number };
+  items: NewsItem[];
+  feed_errors?: Array<{ source: string; error: string }>;
+};
+
+function stripHtml(s: string) {
+  const input = (s || "").trim();
+  if (!input) return "";
+  try {
+    // Browser-safe HTML -> plain text
+    const doc = new DOMParser().parseFromString(input, "text/html");
+    const text = doc.body.textContent || "";
+    return text.replace(/\s+/g, " ").trim();
+  } catch {
+    // Fallback: remove tags
+    return input.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
+
+function timeAgo(iso?: string) {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const diff = Date.now() - t;
+  const sec = Math.floor(diff / 1000);
+  const min = Math.floor(sec / 60);
+  const hr = Math.floor(min / 60);
+  const day = Math.floor(hr / 24);
+  if (day > 0) return `${day}d ago`;
+  if (hr > 0) return `${hr}h ago`;
+  if (min > 0) return `${min}m ago`;
+  return "just now";
+}
+
+export default function Page() {
+  // Defaults (you asked: default to 3d)
+  const [country, setCountry] = useState<Country>("uruguay");
+  const [range, setRange] = useState<RangeKey>("3d");
+  const [perFeed, setPerFeed] = useState<number>(10);
+  const [source, setSource] = useState<string>("all");
+  const [q, setQ] = useState<string>("");
+
+  const [translateMode, setTranslateMode] = useState<TranslateMode>("en");
+  const [view, setView] = useState<ViewMode>("cards");
+
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<NewsResponse | null>(null);
+  const [error, setError] = useState<string>("");
+
+  // Used to avoid race conditions when clicking refresh quickly
+  const requestIdRef = useRef(0);
+
+  const sources = useMemo(() => {
+    const items = data?.items || [];
+    const set = new Set<string>();
+    for (const it of items) set.add(it.source || "");
+    const list = Array.from(set).filter(Boolean).sort((a, b) => a.localeCompare(b));
+    return list;
+  }, [data]);
+
+  const filteredItems = useMemo(() => {
+    const items = data?.items || [];
+    const qq = q.trim().toLowerCase();
+    const chosenSource = source.toLowerCase();
+    return items.filter((it) => {
+      if (chosenSource !== "all" && (it.source || "").toLowerCase() !== chosenSource) return false;
+      if (!qq) return true;
+      const t = stripHtml((it.title_en || it.title || "").toLowerCase());
+      const s = stripHtml((it.summary_en || it.summary || "").toLowerCase());
+      return t.includes(qq) || s.includes(qq) || (it.source || "").toLowerCase().includes(qq);
+    });
+  }, [data, q, source]);
+
+  const topStories = filteredItems.slice(0, 3);
+  const moreStories = filteredItems.slice(3);
+
+  function buildApiUrl(forceRefresh: boolean) {
+    // IMPORTANT: keep using /api/news so your existing Next proxy route keeps working
+    const params = new URLSearchParams();
+    params.set("country", country);
+    params.set("range", range);
+    params.set("per_feed", String(perFeed));
+    params.set("translate", translateMode === "en" ? "en" : "0");
+    params.set("force_refresh", forceRefresh ? "1" : "0");
+    // backend also supports these, but frontend filter is instant so we keep it client-side:
+    // params.set("source", source !== "all" ? source : "");
+    // params.set("q", q.trim());
+    return `/api/news?${params.toString()}`;
+  }
+
+  async function load(forceRefresh: boolean) {
+    const myId = ++requestIdRef.current;
+    setLoading(true);
+    setError("");
+
+    try {
+      const url = buildApiUrl(forceRefresh);
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
+      const json = (await res.json()) as NewsResponse;
+      // ignore stale responses
+      if (myId !== requestIdRef.current) return;
+      setData(json);
+    } catch (e: any) {
+      if (myId !== requestIdRef.current) return;
+      setError(e?.message || "Unknown error");
+      setData(null);
+    } finally {
+      if (myId === requestIdRef.current) setLoading(false);
+    }
+  }
+
+  // Auto-load on first render and when country/range/perFeed/translate changes
+  useEffect(() => {
+    load(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [country, range, perFeed, translateMode]);
+
+  function displayTitle(it: NewsItem) {
+    return stripHtml((it.title_en || it.title || "").trim());
+  }
+  function displaySummary(it: NewsItem) {
+    return stripHtml((it.summary_en || it.summary || "").trim());
+  }
+
+  const translationStats = data?.translation_stats || { cache: 0, openai: 0, error: 0 };
+
+  return (
+    <div style={page}>
+      <div style={hero}>
+        <div style={heroInner}>
+          <h1 style={h1}>Uruguay News</h1>
+          <div style={sub}>
+            Aggregated from multiple RSS sources. Toggle English translation or none.
+          </div>
+
+          <div style={panel}>
+            {/* Row 1: controls */}
+            <div style={row1}>
+              <div style={field}>
+                <div style={label}>Country</div>
+                <select value={country} onChange={(e) => setCountry(e.target.value as Country)} style={select}>
+                  <option value="uruguay">Uruguay</option>
+                  <option value="argentina">Argentina</option>
+                </select>
+              </div>
+
+              <div style={field}>
+                <div style={label}>Range</div>
+                <select value={range} onChange={(e) => setRange(e.target.value as RangeKey)} style={select}>
+                  <option value="3d">Last 3 days</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="all">All</option>
+                </select>
+              </div>
+
+              <div style={field}>
+                <div style={label}>Per feed</div>
+                <select value={String(perFeed)} onChange={(e) => setPerFeed(Number(e.target.value))} style={select}>
+                  <option value="5">5</option>
+                  <option value="8">8</option>
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                </select>
+              </div>
+
+              <div style={{ ...field, minWidth: 240 }}>
+                <div style={label}>Source</div>
+                <select value={source} onChange={(e) => setSource(e.target.value)} style={select}>
+                  <option value="all">All</option>
+                  {sources.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ ...field, flex: 1, minWidth: 320 }}>
+                <div style={label}>Search</div>
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search headlines & summaries..."
+                  style={searchInput}
+                />
+              </div>
+            </div>
+
+            {/* Row 2: aligned buttons / toggles */}
+            <div style={row2}>
+              {/* Translation toggle aligned with the button row */}
+              <div style={fieldInline}>
+                <div style={label}>Translation</div>
+                <div style={segmented}>
+                  <button
+                    type="button"
+                    style={segBtn(translateMode === "en")}
+                    onClick={() => setTranslateMode("en")}
+                    disabled={loading}
+                  >
+                    English
+                  </button>
+                  <button
+                    type="button"
+                    style={segBtn(translateMode === "none")}
+                    onClick={() => setTranslateMode("none")}
+                    disabled={loading}
+                  >
+                    None
+                  </button>
+                </div>
+              </div>
+
+              <div style={fieldInline}>
+                <div style={label}>View</div>
+                <div style={segmented}>
+                  <button type="button" style={segBtn(view === "cards")} onClick={() => setView("cards")}>
+                    Cards
+                  </button>
+                  <button type="button" style={segBtn(view === "compact")} onClick={() => setView("compact")}>
+                    Compact
+                  </button>
+                </div>
+              </div>
+
+              <button onClick={() => load(true)} style={primaryBtn} disabled={loading} type="button">
+                {loading ? "Loading..." : "Refresh"}
+              </button>
+
+              <button onClick={() => load(false)} style={ghostBtn} disabled={loading} type="button">
+                Soft refresh
+              </button>
+
+              <div style={chips}>
+                <span style={chip}>{sources.length} sources</span>
+                <span style={chip}>
+                  cache {translationStats.cache} / openai {translationStats.openai} / err {translationStats.error}
+                </span>
+              </div>
+
+              <div style={metaRight}>
+                <span>
+                  {filteredItems.length} shown / {(data?.items || []).length} received
+                </span>
+                <span style={{ opacity: 0.8 }}>Updated {data ? "Just now" : "-"}</span>
+              </div>
+            </div>
+
+            {error ? (
+              <div style={errorBox}>
+                <div style={{ fontWeight: 700 }}>Fetch failed</div>
+                <div style={{ opacity: 0.9 }}>{error}</div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div style={content}>
+        <div style={sectionTitle}>TOP STORIES</div>
+
+        {view === "cards" ? (
+          <div style={cardGrid}>
+            {topStories.map((it) => (
+              <div key={it.url} style={card}>
+                <div style={cardHeader}>
+                  <span style={pill}>{it.source}</span>
+                  <span style={age}>{timeAgo(it.published_at)}</span>
+                </div>
+                <div style={cardTitle}>{displayTitle(it)}</div>
+                <div style={cardSummary}>{displaySummary(it)}</div>
+                <div style={cardLinks}>
+                  <a style={link} href={it.url} target="_blank" rel="noreferrer">
+                    Read original
+                  </a>
+                  <span style={{ opacity: 0.35 }}>•</span>
+                  <a style={link} href={it.url} target="_blank" rel="noreferrer">
+                    Read in English
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div>
+            {topStories.map((it) => (
+              <div key={it.url} style={compactRow}>
+                <div style={compactLeft}>
+                  <div style={compactTitle}>{displayTitle(it)}</div>
+                  <div style={compactMeta}>
+                    <span style={pillSmall}>{it.source}</span>
+                    <span style={{ opacity: 0.8 }}>{timeAgo(it.published_at)}</span>
+                  </div>
+                </div>
+                <div style={compactLinks}>
+                  <a style={link} href={it.url} target="_blank" rel="noreferrer">
+                    Original
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ height: 18 }} />
+
+        <div style={sectionTitle}>MORE STORIES</div>
+
+        {view === "cards" ? (
+          <div style={stack}>
+            {moreStories.map((it) => (
+              <div key={it.url} style={wideCard}>
+                <div style={cardHeader}>
+                  <span style={pill}>{it.source}</span>
+                  <span style={age}>{timeAgo(it.published_at)}</span>
+                </div>
+                <div style={cardTitle}>{displayTitle(it)}</div>
+                <div style={cardSummary}>{displaySummary(it)}</div>
+                <div style={cardLinks}>
+                  <a style={link} href={it.url} target="_blank" rel="noreferrer">
+                    Read original
+                  </a>
+                  <span style={{ opacity: 0.35 }}>•</span>
+                  <a style={link} href={it.url} target="_blank" rel="noreferrer">
+                    Read in English
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div>
+            {moreStories.map((it) => (
+              <div key={it.url} style={compactRow}>
+                <div style={compactLeft}>
+                  <div style={compactTitle}>{displayTitle(it)}</div>
+                  <div style={compactMeta}>
+                    <span style={pillSmall}>{it.source}</span>
+                    <span style={{ opacity: 0.8 }}>{timeAgo(it.published_at)}</span>
+                  </div>
+                </div>
+                <div style={compactLinks}>
+                  <a style={link} href={it.url} target="_blank" rel="noreferrer">
+                    Original
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={footerNote}>
+          Notes: This MVP shows titles + short summaries only and always links to the original source.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --- styles --- */
+
+const page: React.CSSProperties = {
+  minHeight: "100vh",
+  background: "radial-gradient(1200px 800px at 15% 0%, rgba(120,140,255,0.18), rgba(0,0,0,0) 55%), #05070f",
+  color: "rgba(255,255,255,0.92)",
+};
+
+const hero: React.CSSProperties = {
+  padding: "54px 20px 0",
+};
+
+const heroInner: React.CSSProperties = {
+  maxWidth: 1200,
+  margin: "0 auto",
+};
+
+const h1: React.CSSProperties = {
+  fontSize: 56,
+  letterSpacing: -1,
+  margin: 0,
+  fontWeight: 800,
+};
+
+const sub: React.CSSProperties = {
+  marginTop: 10,
+  opacity: 0.85,
+  fontSize: 16,
+};
+
+const panel: React.CSSProperties = {
+  marginTop: 22,
+  borderRadius: 18,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(0,0,0,0.35)",
+  boxShadow: "0 20px 70px rgba(0,0,0,0.55)",
+  padding: 18,
+};
+
+const row1: React.CSSProperties = {
+  display: "flex",
+  gap: 12,
+  alignItems: "end",
+  flexWrap: "wrap",
+  width: "100%",
+};
+
+const row2: React.CSSProperties = {
+  display: "flex",
+  gap: 12,
+  alignItems: "end",
+  flexWrap: "wrap",
+  width: "100%",
+  marginTop: 12,
+};
+
+const field: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+};
+
+const fieldInline: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+};
+
+const label: React.CSSProperties = {
+  fontSize: 12,
+  opacity: 0.75,
+};
+
+const select: React.CSSProperties = {
+  height: 42,
+  padding: "0 12px",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(10,12,22,0.55)",
+  color: "rgba(255,255,255,0.92)",
+  outline: "none",
+};
+
+const searchInput: React.CSSProperties = {
+  height: 42,
+  padding: "0 12px",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(10,12,22,0.55)",
+  color: "rgba(255,255,255,0.92)",
+  outline: "none",
+};
+
+const segmented: React.CSSProperties = {
+  display: "inline-flex",
+  gap: 6,
+  padding: 6,
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(10,12,22,0.45)",
+};
+
+const segBtn = (active: boolean): React.CSSProperties => ({
+  height: 30,
+  padding: "0 12px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: active ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.06)",
+  color: active ? "rgba(0,0,0,0.92)" : "rgba(255,255,255,0.88)",
+  fontWeight: 700,
+  cursor: "pointer",
+});
+
+const primaryBtn: React.CSSProperties = {
+  height: 42,
+  padding: "0 18px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: "rgba(255,255,255,0.92)",
+  color: "rgba(0,0,0,0.92)",
+  fontWeight: 800,
+  cursor: "pointer",
+};
+
+const ghostBtn: React.CSSProperties = {
+  height: 42,
+  padding: "0 18px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.06)",
+  color: "rgba(255,255,255,0.88)",
+  fontWeight: 800,
+  cursor: "pointer",
+};
+
+const chips: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  alignItems: "center",
+  flexWrap: "wrap",
+};
+
+const chip: React.CSSProperties = {
+  fontSize: 12,
+  padding: "6px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.06)",
+  color: "rgba(255,255,255,0.86)",
+};
+
+const metaRight: React.CSSProperties = {
+  marginLeft: "auto",
+  display: "flex",
+  gap: 14,
+  alignItems: "center",
+  fontSize: 12,
+  opacity: 0.85,
+  whiteSpace: "nowrap",
+};
+
+const errorBox: React.CSSProperties = {
+  marginTop: 12,
+  borderRadius: 14,
+  border: "1px solid rgba(255,80,80,0.25)",
+  background: "rgba(90,10,10,0.35)",
+  padding: 12,
+};
+
+const content: React.CSSProperties = {
+  maxWidth: 1200,
+  margin: "0 auto",
+  padding: "20px 20px 60px",
+};
+
+const sectionTitle: React.CSSProperties = {
+  fontSize: 12,
+  letterSpacing: 1.6,
+  opacity: 0.75,
+  fontWeight: 800,
+  margin: "18px 0 12px",
+};
+
+const cardGrid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 16,
+};
+
+const card: React.CSSProperties = {
+  borderRadius: 18,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(255,255,255,0.96)",
+  color: "rgba(0,0,0,0.90)",
+  padding: 16,
+  minHeight: 180,
+  boxShadow: "0 22px 70px rgba(0,0,0,0.35)",
+};
+
+const wideCard: React.CSSProperties = {
+  ...card,
+  minHeight: 0,
+};
+
+const stack: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+};
+
+const cardHeader: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  marginBottom: 10,
+};
+
+const pill: React.CSSProperties = {
+  fontSize: 12,
+  padding: "6px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(0,0,0,0.12)",
+  background: "rgba(0,0,0,0.04)",
+  fontWeight: 700,
+};
+
+const pillSmall: React.CSSProperties = {
+  ...pill,
+  fontSize: 11,
+  padding: "4px 8px",
+};
+
+const age: React.CSSProperties = {
+  fontSize: 12,
+  opacity: 0.65,
+  fontWeight: 700,
+};
+
+const cardTitle: React.CSSProperties = {
+  fontSize: 20,
+  fontWeight: 900,
+  lineHeight: 1.15,
+};
+
+const cardSummary: React.CSSProperties = {
+  marginTop: 8,
+  fontSize: 14,
+  opacity: 0.9,
+  lineHeight: 1.4,
+};
+
+const cardLinks: React.CSSProperties = {
+  marginTop: 12,
+  display: "flex",
+  gap: 10,
+  alignItems: "center",
+  fontSize: 13,
+  fontWeight: 800,
+};
+
+const link: React.CSSProperties = {
+  color: "rgba(0,0,0,0.92)",
+  textDecoration: "underline",
+};
+
+const compactRow: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  padding: "12px 0",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
+};
+
+const compactLeft: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  minWidth: 0,
+};
+
+const compactTitle: React.CSSProperties = {
+  fontWeight: 900,
+  fontSize: 15,
+  lineHeight: 1.25,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const compactMeta: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  alignItems: "center",
+  fontSize: 12,
+};
+
+const compactLinks: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 800,
+  whiteSpace: "nowrap",
+};
+
+const footerNote: React.CSSProperties = {
+  marginTop: 22,
+  fontSize: 12,
+  opacity: 0.65,
+};
+</file>
+
+<file path="frontend/public/file.svg">
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+</file>
+
+<file path="frontend/public/globe.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+</file>
+
+<file path="frontend/public/next.svg">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+</file>
+
+<file path="frontend/public/vercel.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+</file>
+
+<file path="frontend/public/window.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+</file>
+
+<file path="frontend/.gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="frontend/eslint.config.mjs">
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Override default ignores of eslint-config-next.
+  globalIgnores([
+    // Default ignores of eslint-config-next:
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+  ]),
+]);
+
+export default eslintConfig;
+</file>
+
+<file path="frontend/frontend@0.1.0">
+
+</file>
+
+<file path="frontend/next">
+
+</file>
+
+<file path="frontend/next.config.ts">
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+};
+
+export default nextConfig;
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "next": "16.1.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="frontend/postcss.config.mjs">
+const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="frontend/README.md">
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+</file>
+
+<file path="frontend/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="README.md">
+Uruguay news app
+</file>
+
+</files>
