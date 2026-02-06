@@ -79,16 +79,21 @@ function getHostname(url: string) {
   }
 }
 
-function getFlagEmoji(url: string) {
+// --- NEW: Returns an Image URL instead of an Emoji ---
+function getFlagUrl(url: string) {
   const host = getHostname(url).toLowerCase();
   
-  if (host.includes(".br") || host.includes("folha") || host.includes("globo") || host.includes("estadao") || host.includes("cnnbrasil")) return "🇧🇷";
-  if (host.includes(".py") || host.includes("abc.com.py") || host.includes("ultimahora")) return "🇵🇾";
-  if (host.includes(".bo") || host.includes("eldeber") || host.includes("larazon") || host.includes("lostiempos") || host.includes("erbol")) return "🇧🇴";
-  if (host.includes(".ar") || host.includes("clarin") || host.includes("cronista") || host.includes("ambito") || host.includes("perfil") || host.includes("infobae") || host.includes("lanacion")) return "🇦🇷";
-  if (host.includes(".uy") || host.includes("elpais") || host.includes("elobservador") || host.includes("montevideo") || host.includes("ladiaria") || host.includes("subrayado") || host.includes("teledoce")) return "🇺🇾";
+  // We use flagcdn.com for consistent images
+  const baseUrl = "https://flagcdn.com/48x36"; // 48px wide images
 
-  return "🌎"; 
+  if (host.includes(".br") || host.includes("folha") || host.includes("globo") || host.includes("estadao") || host.includes("cnnbrasil")) return `${baseUrl}/br.png`;
+  if (host.includes(".py") || host.includes("abc.com.py") || host.includes("ultimahora")) return `${baseUrl}/py.png`;
+  if (host.includes(".bo") || host.includes("eldeber") || host.includes("larazon") || host.includes("lostiempos") || host.includes("erbol")) return `${baseUrl}/bo.png`;
+  if (host.includes(".ar") || host.includes("clarin") || host.includes("cronista") || host.includes("ambito") || host.includes("perfil") || host.includes("infobae") || host.includes("lanacion")) return `${baseUrl}/ar.png`;
+  if (host.includes(".uy") || host.includes("elpais") || host.includes("elobservador") || host.includes("montevideo") || host.includes("ladiaria") || host.includes("subrayado") || host.includes("teledoce")) return `${baseUrl}/uy.png`;
+
+  // Fallback: UN flag for generic/unknown
+  return "https://flagcdn.com/48x36/un.png"; 
 }
 
 function getFaviconUrl(url: string) {
@@ -245,11 +250,10 @@ export default function Page() {
     return stripHtml((it.summary_en || it.summary || "").trim());
   }
 
-  // --- RESTORED STATS LOGIC ---
+  // --- STATS LOGIC ---
   const tStats = data?.translation_stats || { cache: 0, openai: 0, error: 0, skipped: 0 };
   const totalReceived = data?.items?.length || 0;
   const totalShown = filteredItems.length;
-  // ----------------------------
 
   const s = getStyles(theme);
 
@@ -273,7 +277,6 @@ export default function Page() {
                     <span style={s.themeText}>LIGHT/DARK</span>
                   </button>
                   
-                  {/* Hide this button if running in Standalone (App) Mode */}
                   {!isStandalone && (
                     <button onClick={handleInstallClick} style={s.themeBtn}>
                       <span style={{ fontSize: "1.2rem", lineHeight: 1 }}>📲</span>
@@ -537,7 +540,12 @@ export default function Page() {
               <div key={it.url} style={s.card}>
                 <div style={s.cardHeader}>
                   <div style={s.sourceRow}>
-                    <span style={s.flagEmoji}>{getFlagEmoji(it.feed_url || it.url)}</span>
+                    {/* --- REPLACED EMOJI WITH IMAGE --- */}
+                    <img 
+                      src={getFlagUrl(it.feed_url || it.url)} 
+                      alt="" 
+                      style={s.flagIcon} 
+                    />
                     <img 
                       src={getFaviconUrl(it.feed_url || it.url)} 
                       alt="" 
@@ -571,7 +579,12 @@ export default function Page() {
                     {displayTitle(it)}
                   </div>
                   <div style={s.compactMeta}>
-                    <span style={s.flagEmojiSmall}>{getFlagEmoji(it.feed_url || it.url)}</span>
+                    {/* --- REPLACED EMOJI WITH IMAGE --- */}
+                    <img 
+                      src={getFlagUrl(it.feed_url || it.url)} 
+                      alt="" 
+                      style={s.flagIconSmall} 
+                    />
                     <img 
                       src={getFaviconUrl(it.feed_url || it.url)} 
                       alt="" 
@@ -746,13 +759,13 @@ function getStyles(theme: Theme): Record<string, any> {
       borderRadius: 8,
       color: textMain,
       padding: "0px 12px", 
-      height: 32, // Smaller
+      height: 32, 
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
       cursor: "pointer",
       fontWeight: 600,
-      fontSize: "0.75rem", // Smaller font
+      fontSize: "0.75rem", 
       boxShadow: isDark ? "none" : "0 1px 3px rgba(0,0,0,0.1)",
     },
     h1: {
@@ -810,7 +823,7 @@ function getStyles(theme: Theme): Record<string, any> {
       fontWeight: 600,
       outline: "none",
     },
-    primaryBtnCompact: { // SMALLER
+    primaryBtnCompact: { 
       height: 32,
       padding: "0 14px",
       borderRadius: 8,
@@ -821,7 +834,7 @@ function getStyles(theme: Theme): Record<string, any> {
       fontSize: "0.8rem",
       cursor: "pointer",
     },
-    segmentedCompact: { // SMALLER
+    segmentedCompact: { 
       display: "flex",
       background: isDark ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.05)",
       padding: 2,
@@ -1013,9 +1026,13 @@ function getStyles(theme: Theme): Record<string, any> {
       alignItems: "center",
       gap: 8,
     },
-    flagEmoji: {
-      fontSize: "1.2rem",
-      lineHeight: 1,
+    // --- NEW STYLES FOR FLAGS ---
+    flagIcon: {
+      width: 24,
+      height: 18,
+      objectFit: "cover",
+      borderRadius: 3,
+      border: "1px solid rgba(128,128,128,0.2)"
     },
     favicon: {
       width: 16,
@@ -1114,8 +1131,13 @@ function getStyles(theme: Theme): Record<string, any> {
       fontSize: "0.8rem",
       color: textMuted,
     },
-    flagEmojiSmall: {
-      fontSize: "1rem",
+    // --- NEW STYLES FOR SMALL FLAGS ---
+    flagIconSmall: {
+      width: 20,
+      height: 15,
+      objectFit: "cover",
+      borderRadius: 2,
+      border: "1px solid rgba(128,128,128,0.2)"
     },
     faviconSmall: {
       width: 14,
