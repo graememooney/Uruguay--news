@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 import httpx
 import time
 import asyncio
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 
 app = FastAPI()
 
@@ -15,19 +17,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION (UPDATED LINKS) ---
+# --- CONFIGURATION ---
 RSS_FEEDS = {
     "uruguay": "https://www.elpais.com.uy/rss",
-    # Infobae changed their URL structure, switching to "Argentina-General"
-    "argentina": "https://www.clarin.com/rss/lo-ultimo/", 
+    "argentina": "https://www.clarin.com/rss/lo-ultimo/",
     "infobae": "https://www.infobae.com/arc/outboundfeeds/rss/",
     "brasil": "https://g1.globo.com/rss/g1/",
-    # ABC Color is 404ing, switching to Ultima Hora for reliability
-    "paraguay": "https://www.ultimahora.com/rss", 
+    # Switching to La Nacion (Stable)
+    "paraguay": "https://www.lanacion.com.py/feed", 
     "chile": "https://www.emol.com/rss/rss_portada.xml"
 }
 
-# --- BROWSER DISGUISE (User-Agent) ---
+# --- BROWSER DISGUISE ---
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
@@ -37,8 +38,18 @@ HEADERS = {
 news_cache = {}
 CACHE_DURATION = 300  # 5 minutes
 
+def parse_date(entry):
+    """Try to clean up the date so the app doesn't hide the story"""
+    if 'published_parsed' in entry and entry.published_parsed:
+        # Convert strict struct_time to ISO format
+        return datetime.fromtimestamp(time.mktime(entry.published_parsed)).isoformat()
+    if 'updated_parsed' in entry and entry.updated_parsed:
+        return datetime.fromtimestamp(time.mktime(entry.updated_parsed)).isoformat()
+    
+    # If no date found, use RIGHT NOW so it shows up at the top
+    return datetime.now().isoformat()
+
 def extract_image(entry):
-    # Safe extraction that won't crash
     try:
         if 'media_content' in entry:
             return entry.media_content[0]['url']
@@ -63,7 +74,6 @@ def clean_html(html_content):
 
 async def fetch_feed(client, country, url):
     try:
-        # Check cache
         if country in news_cache:
             data, timestamp = news_cache[country]
             if time.time() - timestamp < CACHE_DURATION:
@@ -74,19 +84,15 @@ async def fetch_feed(client, country, url):
         response = await client.get(url, headers=HEADERS, timeout=15.0, follow_redirects=True)
         
         if response.status_code != 200:
-            print(f"❌ {country} blocked/error: {response.status_code}")
+            print(f"❌ {country} error: {response.status_code}")
             return []
 
         feed = feedparser.parse(response.content)
         
         articles = []
         for entry in feed.entries[:10]:
-            # --- THE FIX FOR THE CRASH ---
-            # We use .get() instead of .title directly.
-            # If title is missing, we use "No Title" or skip it.
             title = entry.get('title', '')
-            if not title: 
-                continue # Skip broken items
+            if not title: continue
                 
             articles.append({
                 "title": title,
@@ -94,7 +100,8 @@ async def fetch_feed(client, country, url):
                 "summary": clean_html(entry.get('summary', '')),
                 "image": extract_image(entry),
                 "source": country.upper(),
-                "published": entry.get('published', '')
+                # VITAL FIX: Send a clean date or "Now"
+                "published": parse_date(entry) 
             })
             
         news_cache[country] = (articles, time.time())
@@ -106,13 +113,13 @@ async def fetch_feed(client, country, url):
 
 @app.get("/")
 def home():
-    return {"status": "ok", "version": "2.3-bulletproof"}
+    return {"status": "ok", "version": "2.4-dates-fixed"}
 
 @app.get("/news")
 async def get_news(country: str = "uruguay"):
     country = country.lower()
     
-    async with httpx.AsyncClient(verify=False) as client: # verify=False helps with some strict SSL issues
+    async with httpx.AsyncClient(verify=False) as client:
         if country == "mercosur":
             tasks = [fetch_feed(client, c, u) for c, u in RSS_FEEDS.items()]
             results = await asyncio.gather(*tasks)
