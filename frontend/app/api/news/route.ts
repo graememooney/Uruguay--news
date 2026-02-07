@@ -1,36 +1,26 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
-export const runtime = 'edge';
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const country = searchParams.get('country') || 'uruguay';
 
-export async function GET(request: Request) {
+  // We are forcing the bridge to talk ONLY to the new /news path
+  const BACKEND_URL = `https://mercosur-backend-2-0.onrender.com/news?country=${country}`;
+
   try {
-    const { searchParams } = new URL(request.url);
-    // UPDATED: Now pointing to Backend 2.0
-    const backendUrl = "https://mercosur-backend-2-0.onrender.com"; 
+    const response = await fetch(BACKEND_URL, { cache: 'no-store' });
     
-    const endpoint = `${backendUrl}/news?${searchParams.toString()}`;
-    
-    console.log(`Proxying to: ${endpoint}`);
-
-    const res = await fetch(endpoint, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      cache: 'no-store'
-    });
-
-    if (!res.ok) {
-      throw new Error(`Backend responded with ${res.status}`);
+    // If the backend says 404, it means the backend code is definitely the old version
+    if (response.status === 404) {
+      return NextResponse.json({ 
+        ok: false, 
+        error: "Backend is still running old code. Please check Render logs for 'Fetching Brasil'." 
+      }, { status: 404 });
     }
 
-    const data = await res.json();
+    const data = await response.json();
     return NextResponse.json(data);
-
-  } catch (error: any) {
-    return NextResponse.json({ 
-      ok: false, 
-      error: error.message,
-      debug_backend_used: "https://mercosur-backend-2-0.onrender.com" 
-    }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: 'Connection Failed' }, { status: 500 });
   }
 }

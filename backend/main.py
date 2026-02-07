@@ -1,11 +1,11 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import feedparser
-from bs4 import BeautifulSoup
-import httpx
-import time
 import asyncio
+import httpx
+import feedparser
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from bs4 import BeautifulSoup
 from datetime import datetime
+import time
 
 app = FastAPI()
 
@@ -16,129 +16,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION ---
-RSS_FEEDS = {
-    "uruguay": "https://www.elpais.com.uy/rss",
-    "argentina": "https://www.clarin.com/rss/lo-ultimo/",
-    "infobae": "https://www.infobae.com/arc/outboundfeeds/rss/",
-    "brasil": "https://g1.globo.com/rss/g1/",
-    "chile": "https://www.emol.com/rss/rss_portada.xml"
+# This list matches exactly what the frontend dropdowns send
+SOURCE_CONFIG = {
+    "uruguay": [
+        {"name": "El Pais", "url": "https://www.elpais.com.uy/rss"},
+        {"name": "El Observador", "url": "https://www.elobservador.com.uy/rss/home.xml"},
+        {"name": "Montevideo Portal", "url": "https://www.montevideo.com.uy/anxml.aspx?59"}
+    ],
+    "argentina": [
+        {"name": "La Nacion", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"},
+        {"name": "Clarin", "url": "https://www.clarin.com/rss/lo-ultimo/"}
+    ],
+    "paraguay": [
+        {"name": "ABC Color", "url": "https://www.abc.com.py/arc/outboundfeeds/rss/?outputType=xml"}
+    ],
+    "mercosur": [
+        {"name": "El Pais", "url": "https://www.elpais.com.uy/rss"},
+        {"name": "La Nacion", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"},
+        {"name": "ABC Color", "url": "https://www.abc.com.py/arc/outboundfeeds/rss/?outputType=xml"}
+    ]
 }
 
-# --- PUBLISHER NAMES (The Fix) ---
-# We map the country code to the Official Newspaper Name
-# This ensures the Frontend recognizes the source and displays it.
-SOURCE_NAMES = {
-    "uruguay": "El Pais",
-    "argentina": "Clarin",
-    "infobae": "Infobae",
-    "brasil": "G1",
-    "chile": "Emol",
-    "paraguay": "La Nacion"
-}
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/rss+xml, application/xml, text/xml, */*",
-}
-
-# --- MEMORY CACHE ---
 news_cache = {}
-CACHE_DURATION = 300  # 5 minutes
+CACHE_EXPIRATION = 300 
 
-def parse_date(entry):
+def clean_text(html_content):
+    if not html_content: return ""
     try:
-        if 'published_parsed' in entry and entry.published_parsed:
-            return datetime.fromtimestamp(time.mktime(entry.published_parsed)).isoformat()
-        if 'updated_parsed' in entry and entry.updated_parsed:
-            return datetime.fromtimestamp(time.mktime(entry.updated_parsed)).isoformat()
+        soup = BeautifulSoup(html_content, "lxml")
+        return soup.get_text().strip()[:200]
     except:
-        pass
-    return datetime.now().isoformat()
+        return str(html_content)[:200]
 
-def extract_image(entry):
+async def fetch_feed(client, source_name, url):
+    headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0"}
     try:
-        if 'media_content' in entry:
-            return entry.media_content[0]['url']
-        if 'links' in entry:
-            for link in entry.links:
-                if 'image' in link.get('type', ''):
-                    return link.href
-        if 'summary' in entry:
-            soup = BeautifulSoup(entry.summary, 'html.parser')
-            img = soup.find('img')
-            if img and img.get('src'):
-                return img['src']
-    except:
-        pass
-    return "https://via.placeholder.com/300x200?text=News"
-
-def clean_html(html_content):
-    if not html_content:
-        return ""
-    soup = BeautifulSoup(html_content, "html.parser")
-    return soup.get_text()[:200] + "..."
-
-async def fetch_feed(client, country, url):
-    try:
-        if country in news_cache:
-            data, timestamp = news_cache[country]
-            if time.time() - timestamp < CACHE_DURATION:
-                print(f"⚡ {country} from cache")
-                return data
-
-        print(f"🌍 Fetching {country}...")
-        response = await client.get(url, headers=HEADERS, timeout=15.0, follow_redirects=True)
-        
-        if response.status_code != 200:
-            print(f"❌ {country} error: {response.status_code}")
-            return []
-
-        feed = feedparser.parse(response.content)
+        response = await client.get(url, headers=headers, timeout=10.0)
+        feed = feedparser.parse(response.text)
         articles = []
-        
-        # USE THE OFFICIAL NAME (e.g., "El Pais" instead of "Uruguay")
-        source_display = SOURCE_NAMES.get(country, country.title())
-
         for entry in feed.entries[:10]:
-            title = entry.get('title', '')
-            if not title: continue
-                
             articles.append({
-                "title": title,
-                "link": entry.get('link', '#'),
-                "summary": clean_html(entry.get('summary', '')),
-                "image": extract_image(entry),
-                "source": source_display,  # <--- This is the key fix
-                "published": parse_date(entry)
+                "title": entry.get("title", ""),
+                "link": entry.get("link", ""),
+                "source": source_name,
+                "published": entry.get("published", datetime.now().isoformat()),
+                "summary": clean_text(entry.get("summary", ""))
             })
-            
-        news_cache[country] = (articles, time.time())
         return articles
-        
     except Exception as e:
-        print(f"❌ Error fetching {country}: {e}")
         return []
-
-@app.get("/")
-def home():
-    return {"status": "ok", "version": "2.6-publisher-names"}
 
 @app.get("/news")
 async def get_news(country: str = "uruguay"):
-    country = country.lower()
+    now = time.time()
+    country_key = country.lower()
     
-    async with httpx.AsyncClient(verify=False) as client:
-        if country == "mercosur":
-            tasks = [fetch_feed(client, c, u) for c, u in RSS_FEEDS.items()]
-            results = await asyncio.gather(*tasks)
-            all_articles = []
-            for res in results:
-                all_articles.extend(res)
-            return {"country": "mercosur", "articles": all_articles}
+    if country_key in news_cache:
+        ts, data = news_cache[country_key]
+        if now - ts < CACHE_EXPIRATION:
+            return {"ok": True, "articles": data, "cached": True}
 
-        if country in RSS_FEEDS:
-            articles = await fetch_feed(client, country, RSS_FEEDS[country])
-            return {"country": country, "articles": articles}
-            
-        raise HTTPException(status_code=404, detail="Country not found")
+    sources = SOURCE_CONFIG.get(country_key, [])
+    if not sources:
+        return {"ok": False, "error": f"No feeds configured for {country_key}"}
+
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        tasks = [fetch_feed(client, s["name"], s["url"]) for s in sources]
+        results = await asyncio.gather(*tasks)
+    
+    all_articles = [item for sublist in results for item in sublist]
+    all_articles.sort(key=lambda x: x['published'], reverse=True)
+    
+    news_cache[country_key] = (now, all_articles)
+    return {"ok": True, "articles": all_articles, "cached": False}
+
+@app.get("/")
+def home():
+    return {"status": "online", "message": "Mercosur API is active"}
