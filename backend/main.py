@@ -57,7 +57,7 @@ FEEDS_BY_COUNTRY: Dict[str, List[Feed]] = {
     "argentina": [
         Feed("Clarín", "https://www.clarin.com/rss/lo-ultimo/"),
         Feed("La Nación", "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"),
-        Feed("Infobae", "infobae": "https://www.infobae.com/feeds/rss/politica"),
+        Feed("Infobae", "https://www.infobae.com/feeds/rss/politica"),
         Feed("Ámbito", "https://www.ambito.com/rss/pages/home.xml"),
         Feed("El Cronista", "https://www.cronista.com/files/rss/news.xml"),
     ],
