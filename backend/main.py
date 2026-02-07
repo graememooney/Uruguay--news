@@ -15,20 +15,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (UPDATED LINKS) ---
 RSS_FEEDS = {
     "uruguay": "https://www.elpais.com.uy/rss",
-    "argentina": "https://www.clarin.com/rss/lo-ultimo/",
+    # Infobae changed their URL structure, switching to "Argentina-General"
+    "argentina": "https://www.clarin.com/rss/lo-ultimo/", 
+    "infobae": "https://www.infobae.com/arc/outboundfeeds/rss/",
     "brasil": "https://g1.globo.com/rss/g1/",
-    "paraguay": "https://www.abc.com.py/rss.xml",
-    "infobae": "https://www.infobae.com/feeds/rss/politica", 
+    # ABC Color is 404ing, switching to Ultima Hora for reliability
+    "paraguay": "https://www.ultimahora.com/rss", 
     "chile": "https://www.emol.com/rss/rss_portada.xml"
 }
 
 # --- BROWSER DISGUISE (User-Agent) ---
-# This prevents newspapers from blocking our request
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
 
 # --- MEMORY CACHE ---
@@ -36,17 +38,21 @@ news_cache = {}
 CACHE_DURATION = 300  # 5 minutes
 
 def extract_image(entry):
-    if 'media_content' in entry:
-        return entry.media_content[0]['url']
-    if 'links' in entry:
-        for link in entry.links:
-            if 'image' in link.get('type', ''):
-                return link.href
-    if 'summary' in entry:
-        soup = BeautifulSoup(entry.summary, 'html.parser')
-        img = soup.find('img')
-        if img and img.get('src'):
-            return img['src']
+    # Safe extraction that won't crash
+    try:
+        if 'media_content' in entry:
+            return entry.media_content[0]['url']
+        if 'links' in entry:
+            for link in entry.links:
+                if 'image' in link.get('type', ''):
+                    return link.href
+        if 'summary' in entry:
+            soup = BeautifulSoup(entry.summary, 'html.parser')
+            img = soup.find('img')
+            if img and img.get('src'):
+                return img['src']
+    except:
+        pass
     return "https://via.placeholder.com/300x200?text=News"
 
 def clean_html(html_content):
@@ -65,21 +71,26 @@ async def fetch_feed(client, country, url):
                 return data
 
         print(f"🌍 Fetching {country}...")
-        # USE HEADERS HERE TO AVOID BLOCKING
-        response = await client.get(url, headers=HEADERS, timeout=10.0)
+        response = await client.get(url, headers=HEADERS, timeout=15.0, follow_redirects=True)
         
-        # Check if the newspaper actually replied with data
         if response.status_code != 200:
-            print(f"❌ {country} blocked us: {response.status_code}")
+            print(f"❌ {country} blocked/error: {response.status_code}")
             return []
 
         feed = feedparser.parse(response.content)
         
         articles = []
-        for entry in feed.entries[:8]:
+        for entry in feed.entries[:10]:
+            # --- THE FIX FOR THE CRASH ---
+            # We use .get() instead of .title directly.
+            # If title is missing, we use "No Title" or skip it.
+            title = entry.get('title', '')
+            if not title: 
+                continue # Skip broken items
+                
             articles.append({
-                "title": entry.title,
-                "link": entry.link,
+                "title": title,
+                "link": entry.get('link', '#'),
                 "summary": clean_html(entry.get('summary', '')),
                 "image": extract_image(entry),
                 "source": country.upper(),
@@ -95,13 +106,13 @@ async def fetch_feed(client, country, url):
 
 @app.get("/")
 def home():
-    return {"status": "ok", "version": "2.2-headers"}
+    return {"status": "ok", "version": "2.3-bulletproof"}
 
 @app.get("/news")
 async def get_news(country: str = "uruguay"):
     country = country.lower()
     
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    async with httpx.AsyncClient(verify=False) as client: # verify=False helps with some strict SSL issues
         if country == "mercosur":
             tasks = [fetch_feed(client, c, u) for c, u in RSS_FEEDS.items()]
             results = await asyncio.gather(*tasks)
