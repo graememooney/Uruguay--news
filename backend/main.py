@@ -16,6 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Standardized names to match Frontend exactly
 SOURCE_CONFIG = {
     "uruguay": [{"name": "Uruguay", "url": "https://www.elpais.com.uy/rss"}],
     "argentina": [{"name": "Argentina", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"}],
@@ -26,7 +27,10 @@ news_cache = {}
 
 def clean_text(html):
     if not html: return ""
-    return BeautifulSoup(html, "lxml").get_text().strip()[:200]
+    try:
+        return BeautifulSoup(html, "lxml").get_text().strip()[:200]
+    except:
+        return str(html)[:200]
 
 async def fetch_feed(client, source_name, url):
     try:
@@ -35,10 +39,10 @@ async def fetch_feed(client, source_name, url):
         return [{
             "title": e.get("title", ""),
             "link": e.get("link", ""),
-            "source": source_name, # This will now match the region name exactly
+            "source": source_name,
             "published": e.get("published", datetime.now().isoformat()),
             "summary": clean_text(e.get("summary", ""))
-        } for e in feed.entries[:10]]
+        } for e in feed.entries[:15]]
     except: return []
 
 @app.get("/news")
