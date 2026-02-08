@@ -5,6 +5,8 @@ export default function MercosurNews() {
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [country, setCountry] = useState("uruguay");
+  const [view, setView] = useState("cards");
+  const [search, setSearch] = useState("");
 
   const fetchNews = async (target: string) => {
     setLoading(true);
@@ -12,103 +14,87 @@ export default function MercosurNews() {
       const res = await fetch(`/api/news?country=${target}`);
       const data = await res.json();
       setArticles(data.articles || []);
-    } catch (e) { console.error("Fetch error:", e); }
+    } catch (e) { console.error(e); }
     setLoading(false);
   };
 
   useEffect(() => { fetchNews(country); }, [country]);
 
+  const filtered = articles.filter(a => 
+    a.title.toLowerCase().includes(search.toLowerCase())
+  );
+
   return (
-    <div className="min-h-screen bg-[#05070f] text-white p-4 md:p-8 font-sans">
-      {/* Header Section */}
-      <header className="flex justify-between items-center mb-8 max-w-6xl mx-auto border-b border-white/5 pb-6">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-blue-500">Mercosur News</h1>
-          <p className="text-gray-500 text-xs mt-1">Real-time Regional Intelligence</p>
-        </div>
-        <button 
-          onClick={() => fetchNews(country)} 
-          className="bg-white text-black px-6 py-2.5 rounded-xl font-bold hover:bg-blue-400 hover:text-white transition-all transform active:scale-95 shadow-lg shadow-white/5"
-        >
-          <span className="text-[11px] md:text-sm uppercase font-bold tracking-tighter">
-            {loading ? "⌛ Refreshing..." : "🔄 Refresh"}
-          </span>
-        </button>
-      </header>
+    <div className="min-h-screen bg-[#050714] text-white p-4 md:p-12 font-sans">
+      <div className="max-w-7xl mx-auto">
+        <header className="mb-12">
+          <h1 className="text-4xl md:text-6xl font-black tracking-tighter mb-2">Mercosur News</h1>
+          <p className="text-gray-500 font-medium">Real-time Regional Intelligence.</p>
+        </header>
 
-      {/* Selectors Section */}
-      <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
-        {/* Region Selector */}
-        <div className="flex flex-col gap-2">
-          <label className="text-[10px] uppercase tracking-[0.2em] text-gray-500 font-black ml-1">Select Region</label>
-          <div className="relative group">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2">🌎</span>
-            <select 
-              value={country} 
-              onChange={(e) => setCountry(e.target.value)} 
-              className="w-full bg-[#0b1224] border border-white/10 p-4 pl-12 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm appearance-none cursor-pointer transition-all hover:border-white/20"
-            >
-              <option value="uruguay">🇺🇾 Uruguay</option>
-              <option value="argentina">🇦🇷 Argentina</option>
-              <option value="paraguay">🇵🇾 Paraguay</option>
-            </select>
+        {/* RESTORED FULL FILTER BAR */}
+        <div className="bg-[#0b1224] border border-white/5 p-6 rounded-3xl mb-12 shadow-2xl">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">Region</label>
+              <select value={country} onChange={(e) => setCountry(e.target.value)} className="bg-black/40 border border-white/10 p-3 rounded-xl text-sm outline-none">
+                <option value="uruguay">🇺🇾 Uruguay</option>
+                <option value="argentina">🇦🇷 Argentina</option>
+                <option value="paraguay">🇵🇾 Paraguay</option>
+                <option value="mercosur">🌎 Mercosur (All)</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">Range</label>
+              <select className="bg-black/40 border border-white/10 p-3 rounded-xl text-sm outline-none">
+                <option>Last 24 Hours</option>
+                <option>Last 3 Days</option>
+                <option>Last 7 Days</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">Search Intelligence</label>
+              <input type="text" placeholder="Filter headlines..." value={search} onChange={(e) => setSearch(e.target.value)} className="bg-black/40 border border-white/10 p-3 rounded-xl text-sm outline-none" />
+            </div>
+            <div className="flex items-end">
+              <button onClick={() => fetchNews(country)} className="w-full bg-white text-black font-bold py-3 rounded-xl hover:bg-blue-500 hover:text-white transition-all">
+                {loading ? "Refreshing..." : "Refresh Feed"}
+              </button>
+            </div>
           </div>
-        </div>
 
-        {/* Date Range Selector */}
-        <div className="flex flex-col gap-2">
-          <label className="text-[10px] uppercase tracking-[0.2em] text-gray-500 font-black ml-1">Date Range</label>
-          <div className="relative group">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2">📅</span>
-            <select className="w-full bg-[#0b1224] border border-white/10 p-4 pl-12 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm appearance-none cursor-pointer transition-all hover:border-white/20">
-              <option>Last 24 Hours</option>
-              <option>Last 3 Days</option>
-              <option>Last 7 Days</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Article Grid Section */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-6xl mx-auto">
-        {articles.length > 0 ? (
-          articles.map((a: any, i: number) => (
-            <div key={i} className="bg-[#0b1020]/60 border border-white/5 p-6 rounded-[2rem] flex flex-col hover:border-blue-500/40 hover:bg-[#0b1020]/80 transition-all duration-300 group relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-1 h-full bg-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-              
-              <div className="flex justify-between items-start mb-4">
-                <span className="bg-blue-500/10 text-blue-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-blue-500/20">
-                  {a.source}
-                </span>
-                <span className="text-[10px] text-gray-600 font-medium">ES → EN</span>
+          <div className="flex flex-wrap gap-8 border-t border-white/5 pt-6">
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">Translation</label>
+              <div className="flex bg-black/40 p-1 rounded-xl border border-white/10">
+                <button className="px-4 py-1.5 bg-white/10 rounded-lg text-xs font-bold">English</button>
+                <button className="px-4 py-1.5 text-xs font-bold text-gray-500">None</button>
               </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">View Mode</label>
+              <div className="flex bg-black/40 p-1 rounded-xl border border-white/10">
+                <button onClick={() => setView("cards")} className={`px-4 py-1.5 rounded-lg text-xs font-bold ${view === 'cards' ? 'bg-white/10' : 'text-gray-500'}`}>Cards</button>
+                <button onClick={() => setView("compact")} className={`px-4 py-1.5 rounded-lg text-xs font-bold ${view === 'compact' ? 'bg-white/10' : 'text-gray-500'}`}>Compact</button>
+              </div>
+            </div>
+          </div>
+        </div>
 
-              <h3 className="font-bold text-lg md:text-xl mb-4 leading-tight group-hover:text-blue-400 transition-colors">
-                {a.title}
-              </h3>
-              
-              <p className="text-sm text-gray-400 mb-8 line-clamp-4 leading-relaxed font-light italic">
-                "{a.summary}"
-              </p>
-              
-              <a 
-                href={a.link} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="mt-auto text-center py-3 bg-white/5 hover:bg-blue-500 hover:text-white rounded-xl text-xs font-bold transition-all border border-white/5"
-              >
-                Read Original Article
-              </a>
+        {/* RESTORED NEWS GRID */}
+        <div className={view === "cards" ? "grid grid-cols-1 md:grid-cols-3 gap-8" : "flex flex-col gap-4"}>
+          {filtered.map((a: any, i: number) => (
+            <div key={i} className="bg-[#0b1224]/50 border border-white/5 p-6 rounded-[2rem] hover:border-blue-500/30 transition-all group">
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-[10px] font-black uppercase tracking-widest text-blue-400 bg-blue-500/10 px-3 py-1 rounded-full">{a.source}</span>
+                <span className="text-[10px] text-gray-600 font-bold italic">Spanish → English</span>
+              </div>
+              <h3 className="text-xl font-bold mb-4 leading-tight group-hover:text-blue-400 transition-colors">{a.title}</h3>
+              <p className="text-sm text-gray-400 font-light leading-relaxed mb-6 line-clamp-3">"{a.summary}"</p>
+              <a href={a.link} target="_blank" className="block text-center py-3 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-bold transition-all border border-white/5">Read Full Intel</a>
             </div>
-          ))
-        ) : (
-          !loading && (
-            <div className="col-span-full text-center py-32 border-2 border-dashed border-white/5 rounded-[3rem]">
-              <p className="text-gray-500 text-lg font-light">No intelligence gathered for this region yet.</p>
-              <button onClick={() => fetchNews(country)} className="mt-4 text-blue-500 text-sm font-bold hover:underline">Retry Connection</button>
-            </div>
-          )
-        )}
+          ))}
+        </div>
       </div>
     </div>
   );
