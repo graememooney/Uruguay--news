@@ -27,12 +27,20 @@ export default function MercosurNews() {
   return (
     <div className="min-h-screen bg-[#050714] text-white p-4 md:p-12 font-sans">
       <div className="max-w-7xl mx-auto">
-        <header className="mb-12">
-          <h1 className="text-5xl md:text-7xl font-black tracking-tighter mb-2 italic">Mercosur News</h1>
-          <p className="text-gray-500 font-bold uppercase tracking-widest text-xs">Real-time Regional Intelligence</p>
+        <header className="mb-12 flex justify-between items-start">
+          <div>
+            <h1 className="text-5xl md:text-7xl font-black tracking-tighter mb-2 italic">Mercosur News</h1>
+            <p className="text-gray-500 font-bold uppercase tracking-widest text-xs">Real-time Regional Intelligence</p>
+          </div>
+          <div className="flex gap-4 items-center">
+            <div className="text-right hidden md:block">
+              <span className="block text-[10px] font-black text-gray-600 uppercase tracking-widest">Theme</span>
+              <span className="text-xs font-bold text-yellow-500">☀️ LIGHT/DARK</span>
+            </div>
+          </div>
         </header>
 
-        {/* ORIGINAL FULL DASHBOARD FILTER BAR */}
+        {/* FULL DASHBOARD FILTER BAR */}
         <div className="bg-[#0b1224] border border-white/5 p-8 rounded-[2rem] mb-12 shadow-2xl">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
             <div className="flex flex-col gap-2">
@@ -49,7 +57,6 @@ export default function MercosurNews() {
               <select className="bg-black/40 border border-white/10 p-3 rounded-xl text-sm outline-none">
                 <option>Last 3 Days</option>
                 <option>Last 24 Hours</option>
-                <option>All Time</option>
               </select>
             </div>
             <div className="flex flex-col gap-2">
@@ -88,19 +95,19 @@ export default function MercosurNews() {
             </div>
             <div className="flex items-end flex-1">
               <button onClick={() => fetchNews(country)} className="bg-white text-black font-black text-xs tracking-[0.2em] px-10 py-3 rounded-xl hover:bg-blue-500 hover:text-white transition-all shadow-xl uppercase">
-                {loading ? "Refreshing..." : "Refresh"}
+                {loading ? "⌛ Refreshing..." : "🔄 Refresh"}
               </button>
             </div>
           </div>
         </div>
 
-        {/* ORIGINAL NEWS GRID */}
+        {/* NEWS GRID */}
         <div className={view === "cards" ? "grid grid-cols-1 md:grid-cols-3 gap-10" : "flex flex-col gap-4"}>
           {filtered.map((a: any, i: number) => (
             <div key={i} className="bg-[#0b1224]/40 border border-white/5 p-8 rounded-[2.5rem] hover:border-blue-500/40 transition-all group relative overflow-hidden">
               <div className="flex justify-between items-center mb-6">
                 <span className="text-[10px] font-black uppercase tracking-widest text-blue-400 bg-blue-500/10 px-4 py-1.5 rounded-full border border-blue-500/20">{a.source}</span>
-                <span className="text-[10px] text-gray-700 font-bold italic">Spanish → English</span>
+                <span className="text-[10px] text-gray-700 font-bold italic">ES → EN</span>
               </div>
               <h3 className="text-2xl font-black mb-6 leading-[1.15] group-hover:text-blue-400 transition-colors tracking-tight">{a.title}</h3>
               <p className="text-sm text-gray-500 font-medium leading-relaxed mb-10 line-clamp-4 italic italic-serif">"{a.summary}"</p>

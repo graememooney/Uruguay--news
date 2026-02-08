@@ -1,7 +1,7 @@
 import asyncio
 import httpx
 import feedparser
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -35,8 +35,6 @@ SOURCE_CONFIG = {
         {"name": "ABC Color", "url": "https://www.abc.com.py/arc/outboundfeeds/rss/?outputType=xml"}
     ]
 }
-
-news_cache = {}
 
 def clean_text(html):
     if not html: return ""
