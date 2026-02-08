@@ -42,9 +42,9 @@ def clean_text(html):
     if not html: return ""
     try:
         soup = BeautifulSoup(html, "lxml")
-        return soup.get_text().strip()[:200]
+        return soup.get_text().strip()[:250]
     except:
-        return str(html)[:200]
+        return str(html)[:250]
 
 async def fetch_feed(client, source_name, url):
     try:
@@ -61,8 +61,7 @@ async def fetch_feed(client, source_name, url):
 
 @app.get("/news")
 async def get_news(country: str = "uruguay"):
-    country_key = country.lower()
-    sources = SOURCE_CONFIG.get(country_key, [])
+    sources = SOURCE_CONFIG.get(country.lower(), [])
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = [fetch_feed(client, s["name"], s["url"]) for s in sources]
         results = await asyncio.gather(*tasks)
