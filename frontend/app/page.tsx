@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { RefreshCcw, Newspaper } from "lucide-react";
+import { RefreshCcw, Newspaper, Globe, Calendar } from "lucide-react";
 
 export default function MercosurNews() {
   const [articles, setArticles] = useState([]);
@@ -20,31 +20,69 @@ export default function MercosurNews() {
   useEffect(() => { fetchNews(country); }, [country]);
 
   return (
-    <div className="min-h-screen bg-[#05070f] text-white p-8">
+    <div className="min-h-screen bg-[#05070f] text-white p-4 md:p-8">
       <header className="flex justify-between items-center mb-8 max-w-6xl mx-auto">
-        <h1 className="text-2xl font-bold flex items-center gap-2"><Newspaper /> Mercosur News</h1>
-        <button onClick={() => fetchNews(country)} className="bg-white text-black px-4 py-2 rounded-lg flex items-center gap-2">
-          <RefreshCcw className={loading ? "animate-spin" : ""} /> Refresh
+        <h1 className="text-xl md:text-2xl font-bold flex items-center gap-2">
+          <Newspaper className="text-blue-500" /> Mercosur News
+        </h1>
+        <button 
+          onClick={() => fetchNews(country)} 
+          className="bg-white text-black px-3 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-200 transition-colors"
+        >
+          <RefreshCcw size={16} className={loading ? "animate-spin" : ""} />
+          <span className="text-[11px] md:text-sm font-bold">
+            {loading ? "Refreshing..." : "Refresh"}
+          </span>
         </button>
       </header>
 
-      <div className="max-w-6xl mx-auto mb-8">
-        <select value={country} onChange={(e) => setCountry(e.target.value)} className="bg-[#0b1224] border border-white/10 p-2 rounded w-48">
-          <option value="uruguay">Uruguay</option>
-          <option value="argentina">Argentina</option>
-          <option value="paraguay">Paraguay</option>
-        </select>
+      <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+        {/* Region Selector */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold ml-1">Select Region</label>
+          <div className="relative">
+            <Globe className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
+            <select 
+              value={country} 
+              onChange={(e) => setCountry(e.target.value)} 
+              className="w-full bg-[#0b1224] border border-white/10 p-3 pl-10 rounded-xl appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="uruguay">Uruguay</option>
+              <option value="argentina">Argentina</option>
+              <option value="paraguay">Paraguay</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Date Range Selector */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold ml-1">Date Range</label>
+          <div className="relative">
+            <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
+            <select className="w-full bg-[#0b1224] border border-white/10 p-3 pl-10 rounded-xl appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option>Last 24 Hours</option>
+              <option>Last 3 Days</option>
+              <option>Last 7 Days</option>
+            </select>
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-        {articles.map((a: any, i) => (
-          <div key={i} className="bg-[#0b1020]/60 border border-white/10 p-4 rounded-xl flex flex-col">
-            <span className="text-blue-400 text-xs font-bold mb-2 uppercase">{a.source}</span>
-            <h3 className="font-bold mb-2">{a.title}</h3>
-            <p className="text-sm text-gray-400 mb-4 line-clamp-3">{a.summary}</p>
-            <a href={a.link} target="_blank" className="mt-auto text-center py-2 bg-white/5 rounded text-sm">Read Original</a>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
+        {articles.length > 0 ? (
+          articles.map((a: any, i) => (
+            <div key={i} className="bg-[#0b1020]/60 border border-white/10 p-5 rounded-2xl flex flex-col hover:border-blue-500/50 transition-all group">
+              <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold mb-3 uppercase px-2 py-1 rounded w-fit">{a.source}</span>
+              <h3 className="font-bold text-lg mb-3 group-hover:text-blue-400 transition-colors leading-tight">{a.title}</h3>
+              <p className="text-sm text-gray-400 mb-6 line-clamp-3 leading-relaxed">{a.summary}</p>
+              <a href={a.link} target="_blank" className="mt-auto text-center py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-medium transition-colors">
+                Read Original
+              </a>
+            </div>
+          ))
+        ) : (
+          !loading && <div className="col-span-full text-center py-20 text-gray-500">No stories found. Try a different region.</div>
+        )}
       </div>
     </div>
   );
