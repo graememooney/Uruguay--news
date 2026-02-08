@@ -1,14 +1,12 @@
-import asyncio
 import httpx
 import feedparser
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
-from datetime import datetime
-import time
 
 app = FastAPI()
 
+# Enable connection between frontend and backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,55 +14,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SOURCE_CONFIG = {
-    "uruguay": [
-        {"name": "El Pais", "url": "https://www.elpais.com.uy/rss"},
-        {"name": "El Observador", "url": "https://www.elobservador.com.uy/rss/home.xml"},
-        {"name": "Montevideo Portal", "url": "https://www.montevideo.com.uy/anxml.aspx?59"}
-    ],
-    "argentina": [
-        {"name": "La Nacion", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"},
-        {"name": "Clarin", "url": "https://www.clarin.com/rss/lo-ultimo/"}
-    ],
-    "paraguay": [
-        {"name": "ABC Color", "url": "https://www.abc.com.py/arc/outboundfeeds/rss/?outputType=xml"}
-    ],
-    "mercosur": [
-        {"name": "El Pais", "url": "https://www.elpais.com.uy/rss"},
-        {"name": "La Nacion", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"},
-        {"name": "ABC Color", "url": "https://www.abc.com.py/arc/outboundfeeds/rss/?outputType=xml"}
-    ]
-}
-
-def clean_text(html):
+def clean_summary(html):
     if not html: return ""
-    try:
-        soup = BeautifulSoup(html, "lxml")
-        return soup.get_text().strip()[:250]
-    except:
-        return str(html)[:250]
-
-async def fetch_feed(client, source_name, url):
-    try:
-        response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-        feed = feedparser.parse(response.text)
-        return [{
-            "title": e.get("title", ""),
-            "link": e.get("link", ""),
-            "source": source_name,
-            "published": e.get("published", datetime.now().isoformat()),
-            "summary": clean_text(e.get("summary", ""))
-        } for e in feed.entries[:10]]
-    except: return []
+    return BeautifulSoup(html, "lxml").get_text().strip()[:200] + "..."
 
 @app.get("/news")
-async def get_news(country: str = "uruguay"):
-    sources = SOURCE_CONFIG.get(country.lower(), [])
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        tasks = [fetch_feed(client, s["name"], s["url"]) for s in sources]
-        results = await asyncio.gather(*tasks)
-    all_articles = [item for sublist in results for item in sublist]
-    return {"ok": True, "articles": all_articles}
+async def get_uruguay_news():
+    url = "https://www.elpais.com.uy/rss"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, timeout=10.0)
+        feed = feedparser.parse(response.text)
+        
+    articles = []
+    for entry in feed.entries[:10]:
+        articles.append({
+            "title": entry.get("title", "No Title"),
+            "summary": clean_summary(entry.get("summary", "")),
+            "link": entry.get("link", ""),
+            "source": "El Pais (UY)"
+        })
+    
+    return {"ok": True, "articles": articles}
 
 @app.get("/")
-def home(): return {"status": "online"}
+def health_check():
+    return {"status": "online", "region": "Uruguay"}
