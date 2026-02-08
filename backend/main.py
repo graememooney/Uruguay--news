@@ -16,7 +16,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Matching dropdown values exactly: "uruguay", "argentina", "paraguay"
 SOURCE_CONFIG = {
     "uruguay": [{"name": "Uruguay", "url": "https://www.elpais.com.uy/rss"}],
     "argentina": [{"name": "Argentina", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/?outputType=xml"}],
